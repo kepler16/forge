@@ -1,12 +1,13 @@
 (ns k16.forge.namespace
-   (:require
+  (:require
    [clojure.java.io :as io]
    [clojure.string :as str])
   (:import
    java.io.File
    java.net.URI
-   java.nio.file.Paths)
-  )
+   java.nio.file.Paths))
+
+(set! *warn-on-reflection* true)
 
 (defn- is-parent [parent child]
   (let [parent (-> (Paths/get (URI. (str "file://" parent)))
@@ -47,10 +48,10 @@
    (into #{}
          (comp
           (filter (fn [path]
-                    (let [file ((requiring-resolve 'clojure.java.io/file) path)]
+                    (let [file (io/file path)]
                       (and (.exists file)
                            (.isDirectory file)))))
-          (map (fn [path]
+          (map (fn [^String path]
                  (->> (File. path)
                       .getAbsolutePath
                       str)))
@@ -63,9 +64,9 @@
    (fn [dir]
      (let [files (file-seq (io/file dir))]
        (->> files
-            (filter (fn [file]
+            (filter (fn [^File file]
                       (.isFile file)))
-            (map (fn [file]
+            (map (fn [^File file]
                    (subs (.getAbsolutePath file) (inc (count dir)))))
 
             (filter (fn [path]
