@@ -51,10 +51,36 @@
 
     @*reports*))
 
-(defn run-all []
+(defn- contains-pattern? [sym patterns]
+  (reduce
+   (fn [_ pattern]
+     (let [pattern (re-pattern pattern)]
+       (if (re-find pattern (str sym))
+         (reduced true)
+         false)))
+   false
+   patterns))
+
+(defn- filter-namespaces [namespaces include exclude]
+  (filter
+   (fn [namespace]
+     (let [included (if (seq include)
+                      (contains-pattern? namespace include)
+                      true)
+           excluded (if (seq exclude)
+                      (contains-pattern? namespace exclude)
+                      false)]
+       (and included (not excluded))))
+   namespaces))
+
+(defn run-all [props]
   (with-redefs [test/report report-handler]
-    (let [namespaces (forge.namespace/get-test-namespaces)
-          pool (Executors/newFixedThreadPool (.availableProcessors (Runtime/getRuntime)))]
+    (let [parallelism (or (:parallelism props)
+                          (.availableProcessors (Runtime/getRuntime)))
+
+          namespaces (-> (forge.namespace/get-test-namespaces)
+                         (filter-namespaces (:include props) (:exclude props)))
+          pool (Executors/newFixedThreadPool parallelism)]
 
       (doseq [ns namespaces]
         (require ns))
