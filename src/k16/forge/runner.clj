@@ -43,7 +43,10 @@
     (try
       (test/test-ns test-ns)
       (catch Exception ex
-        (let [current-var @*current-test-var*]
+        (let [current-var @*current-test-var*
+              current-var (if current-var
+                            current-var
+                            (symbol (str test-ns "/" "unknown")))]
           (swap! *reports* update current-var
                  (fn [reports]
                    (conj reports {:type :fail
