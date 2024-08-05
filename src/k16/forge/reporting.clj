@@ -86,6 +86,5 @@
 
    results))
 
-(defn print-summary [results]
-  (let [summary (calculate-summary results)]
-    (puget/pprint summary puget-opts)))
+(defn print-summary [summary]
+  (puget/pprint summary puget-opts))

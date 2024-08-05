@@ -89,10 +89,13 @@
             (->> namespaces
                  (mapv (fn [test-ns]
                          (.submit pool ^Callable (fn [] (run-test-ns test-ns)))))
-                 (mapv deref))]
+                 (mapv deref))
+
+            summary (reporting/calculate-summary results)
+            failed? (< 0 (-> summary :tests :failed))]
 
         (println \newline)
         (reporting/print-failures results)
-        (reporting/print-summary results))
+        (reporting/print-summary summary)
 
-      (System/exit 0))))
+        (System/exit (if failed? 1 0))))))
