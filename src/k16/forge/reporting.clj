@@ -38,7 +38,8 @@
                     (puget/pprint (:expected report) puget-opts)
                     (println \newline "Actual"))
                   (println "Failed with exception"))
-                (pretty.exceptions/print-exception (:actual report)))
+                (binding [pretty.exceptions/*print-level* 15]
+                  (pretty.exceptions/print-exception (:actual report))))
 
             (= :matcher-combinators.clj-test/mismatch
                (-> report :actual meta :type))
