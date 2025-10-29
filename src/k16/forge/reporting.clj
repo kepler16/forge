@@ -1,5 +1,6 @@
 (ns k16.forge.reporting
   (:require
+   [bling.core :refer [print-bling]]
    [clj-commons.format.exceptions :as pretty.exceptions]
    [lambdaisland.deep-diff2 :as ddiff]
    [puget.printer :as puget]))
@@ -28,7 +29,7 @@
     (doseq [[test reports] result]
       (doseq [report reports]
         (when-not (= :pass (:type report))
-          (puget/pprint test puget-opts)
+          (print-bling [:system-red.bold.dashed-underline (subs (str test) 2)])
 
           (cond
             (instance? Exception (:actual report))
@@ -48,7 +49,16 @@
             :else
             (let [diff (ddiff/diff (:expected report)
                                    (:actual report))]
-              (ddiff/pretty-print diff))))))))
+              (ddiff/pretty-print diff)))))))
+
+  (print-bling [:system-grey "Failed tests:"])
+  (println)
+
+  (doseq [result results]
+    (doseq [[test reports] result]
+      (doseq [report reports]
+        (when-not (= :pass (:type report))
+          (print-bling [:system-red.bold (subs (str test) 2)]))))))
 
 (defn calculate-summary [results]
   (reduce
@@ -88,4 +98,12 @@
    results))
 
 (defn print-summary [summary]
-  (puget/pprint summary puget-opts))
+  (print-bling [:bold.system-yellow.dashed-underline "Tests"])
+  (print-bling [:system-green "  Passed: "] [:system-green.bold (get-in summary [:tests :passed])])
+  (print-bling [:system-red "  Failed: "] [:system-red.bold (get-in summary [:tests :failed])])
+
+  (println)
+
+  (print-bling [:bold.system-yellow.dashed-underline "Assertions"])
+  (print-bling [:system-green "  Passed: "] [:system-green.bold (get-in summary [:assertions :passed])])
+  (print-bling [:system-red "  Failed: "] [:system-red.bold (get-in summary [:assertions :failed])]))

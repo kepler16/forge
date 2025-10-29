@@ -1,5 +1,6 @@
 (ns k16.forge.runner
   (:require
+   [bling.core :as bling]
    [clojure.test :as test]
    [k16.forge.namespace :as forge.namespace]
    [k16.forge.reporting :as reporting])
@@ -32,7 +33,7 @@
 
   (when (or (= (:type report) :fail)
             (= (:type report) :error))
-    (.write System/out (.getBytes "F")))
+    (.write System/out (.getBytes (bling/bling [:bold.system-red "F"]))))
 
   (.flush System/out))
 
@@ -99,6 +100,7 @@
 
         (println \newline)
         (reporting/print-failures results)
+        (println)
         (reporting/print-summary summary)
 
         (System/exit (if failed? 1 0))))))

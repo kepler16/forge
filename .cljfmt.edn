@@ -1,1 +1,2 @@
-{:remove-multiple-non-indenting-spaces? true}
+{:remove-multiple-non-indenting-spaces? true
+ :sort-ns-references? true}
