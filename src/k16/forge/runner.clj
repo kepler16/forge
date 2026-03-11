@@ -1,11 +1,12 @@
 (ns k16.forge.runner
   (:require
-   [bling.core :as bling]
+   [bling.core :as bling :refer [print-bling]]
    [clojure.test :as test]
    [k16.forge.namespace :as forge.namespace]
    [k16.forge.reporting :as reporting])
   (:import
-   java.util.concurrent.Executors))
+   java.util.concurrent.Executors
+   java.util.concurrent.TimeUnit))
 
 (set! *warn-on-reflection* true)
 
@@ -33,7 +34,7 @@
 
   (when (or (= (:type report) :fail)
             (= (:type report) :error))
-    (.write System/out (.getBytes (bling/bling [:bold.system-red "F"]))))
+    (.write System/out (String/.getBytes (bling/bling [:bold.system-red "F"]))))
 
   (.flush System/out))
 
@@ -77,6 +78,15 @@
        (and included (not excluded))))
    namespaces))
 
+(defn- print-results [results]
+  (let [summary (reporting/calculate-summary results)
+        failed? (< 0 (-> summary :tests :failed))]
+    (println \newline)
+    (reporting/print-failures results)
+    (println)
+    (reporting/print-summary summary)
+    failed?))
+
 (defn run-all [props]
   (with-redefs [test/report report-handler]
     (let [parallelism (or (:parallelism props)
@@ -84,23 +94,47 @@
 
           namespaces (-> (forge.namespace/get-test-namespaces)
                          (filter-namespaces (:include props) (:exclude props)))
-          pool (Executors/newFixedThreadPool parallelism)]
+          pool (Executors/newFixedThreadPool parallelism)
 
+          results (atom [])
+          interrupted? (atom false)
+
+          shutdown-hook
+          (Thread.
+           (fn []
+             (reset! interrupted? true)
+             (.shutdown pool)
+             (println (bling/bling "["
+                                   [:bold.system-red "Interrupted"]
+                                   ":: Waiting for in-progress tests to terminate...]"))
+             (when-not (.awaitTermination pool 10 TimeUnit/SECONDS)
+               (.shutdownNow pool))
+             (print-results @results)
+             (println)))]
+
+      (print-bling [:system-yellow.bold "Loading test namespaces "]
+                   [:system-blue.bold (str "[" (count namespaces) "]")]
+                   [:system-yellow.bold " ..."])
       (doseq [ns namespaces]
         (require ns))
 
-      (let [results
+      (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
+
+      (let [futures
             (->> namespaces
                  (mapv (fn [test-ns]
-                         (.submit pool ^Callable (fn [] (run-test-ns test-ns)))))
-                 (mapv deref))
+                         (.submit pool ^Callable
+                                  (fn []
+                                    (when-not @interrupted?
+                                      (let [result (run-test-ns test-ns)]
+                                        (swap! results conj result)
+                                        result)))))))]
+        (mapv deref futures)
 
-            summary (reporting/calculate-summary results)
-            failed? (< 0 (-> summary :tests :failed))]
-
-        (println \newline)
-        (reporting/print-failures results)
-        (println)
-        (reporting/print-summary summary)
-
-        (System/exit (if failed? 1 0))))))
+        (when-not @interrupted?
+          (try
+            (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
+            (catch IllegalStateException _))
+          (.shutdown pool)
+          (let [failed? (print-results @results)]
+            (System/exit (if failed? 1 0))))))))
