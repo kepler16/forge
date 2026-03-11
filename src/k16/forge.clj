@@ -27,6 +27,16 @@
           {:option "parallelism"
            :short "p"
            :as "The maximum number of tests to run concurrently. Defaults to the number of cores"
+           :type :int}
+
+          {:option "timings"
+           :short "t"
+           :as "Report timing stats for fixtures and tests"
+           :type :with-flag
+           :default false}
+
+          {:option "slowest-tests"
+           :as "Report the N slowest tests. Implies --timings"
            :type :int}]
    :runs
    (fn [props]
@@ -35,7 +45,8 @@
            exclude (:exclude props)
            props (cond-> props
                    include (assoc :include (str/split include #","))
-                   exclude (assoc :exclude (str/split exclude #",")))]
+                   exclude (assoc :exclude (str/split exclude #","))
+                   (:slowest-tests props) (assoc :timings true))]
        (runner/run-all props)))})
 
 (defn -main [& args]

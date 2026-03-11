@@ -51,40 +51,68 @@
 
 (defn- run-test-var [v each-fixture-fn results]
   (binding [*reports* (atom {})]
-    (try (each-fixture-fn (fn [] (test/test-var v)))
-         (catch Exception ex
-           (swap! *reports* update v
-                  (fn [reports]
-                    (conj reports {:type :fail
-                                   :var v
-                                   :actual ex})))))
-    (let [result @*reports*]
-      (when (seq result)
-        (swap! results conj result)))))
+    (let [t0 (System/nanoTime)
+          t1 (volatile! t0)
+          t2 (volatile! t0)]
+      (try (each-fixture-fn
+            (fn []
+              (vreset! t1 (System/nanoTime))
+              (test/test-var v)
+              (vreset! t2 (System/nanoTime))))
+           (catch Exception ex
+             (swap! *reports* update v
+                    (fn [reports]
+                      (conj reports {:type :fail
+                                     :var v
+                                     :actual ex})))))
+      (let [t3 (System/nanoTime)
+            result @*reports*]
+        (when (seq result)
+          (swap! results conj result))
+        {:var v
+         :each {:setup-ms (/ (- @t1 t0) 1e6)
+                :teardown-ms (/ (- t3 @t2) 1e6)}
+         :test-ms (/ (- @t2 @t1) 1e6)}))))
 
 (defn- run-test-ns
-  [^ExecutorService executor ^Semaphore semaphore test-ns results interrupted?]
+  [^ExecutorService executor ^Semaphore semaphore test-ns results timings interrupted?]
   (let [test-vars (get-test-vars test-ns)
         {:keys [once each]} (get-ns-fixtures test-ns)
-        released? (atom false)]
+        released? (atom false)
+        t0 (volatile! 0)
+        t1 (volatile! 0)
+        t2 (volatile! 0)]
 
     (Semaphore/.acquire semaphore)
+    (vreset! t0 (System/nanoTime))
     (try
       (when-not @interrupted?
-        (once
-         (fn []
-           (Semaphore/.release semaphore)
-           (reset! released? true)
-           (->> test-vars
-                (mapv (fn [v]
-                        (vthread executor
-                          (Semaphore/.acquire semaphore)
-                          (try (when-not @interrupted?
-                                 (run-test-var v each results))
-                               (finally
-                                 (Semaphore/.release semaphore))))))
+        (let [test-timings
+              (once
+               (fn []
+                 (vreset! t1 (System/nanoTime))
+                 (Semaphore/.release semaphore)
+                 (reset! released? true)
+                 (let [test-timings
+                       (->> test-vars
+                            (mapv (fn [v]
+                                    (vthread executor
+                                             (Semaphore/.acquire semaphore)
+                                             (try (when-not @interrupted?
+                                                    (run-test-var v each results))
+                                                  (finally
+                                                    (Semaphore/.release semaphore))))))
+                            (mapv deref)
+                            (filterv some?))]
+                   (vreset! t2 (System/nanoTime))
+                   test-timings)))
 
-                (mapv deref)))))
+              t3 (System/nanoTime)]
+          (swap! timings conj
+                 {:ns test-ns
+                  :once {:setup-ms (/ (- @t1 @t0) 1e6)
+                         :teardown-ms (/ (- t3 @t2) 1e6)}
+                  :tests test-timings})))
 
       (finally
         (when-not @released?
@@ -112,13 +140,16 @@
        (and included (not excluded))))
    namespaces))
 
-(defn- print-results [results]
+(defn- print-results [results timings props]
   (let [summary (reporting/calculate-summary results)
         failed? (< 0 (-> summary :tests :failed))]
     (println \newline)
     (reporting/print-failures results)
     (println)
     (reporting/print-summary summary)
+    (when (:timings props)
+      (println)
+      (reporting/print-timings timings props))
     failed?))
 
 (defn run-all [props]
@@ -133,6 +164,7 @@
           semaphore (Semaphore. parallelism)
 
           results (atom [])
+          timings (atom [])
           interrupted? (atom false)
 
           shutdown-hook
@@ -145,7 +177,7 @@
                                    "::Waiting for in-progress tests to terminate]"))
              (when-not (.awaitTermination executor 10 TimeUnit/SECONDS)
                (.shutdownNow executor))
-             (print-results @results)
+             (print-results @results @timings props)
              (println)))]
 
       (print-bling [:system-yellow.bold "Loading test namespaces "]
@@ -159,14 +191,14 @@
       (->> namespaces
            (mapv (fn [test-ns]
                    (vthread executor
-                     (when-not @interrupted?
-                       (run-test-ns executor semaphore
-                                    test-ns results interrupted?)))))
+                            (when-not @interrupted?
+                              (run-test-ns executor semaphore
+                                           test-ns results timings interrupted?)))))
            (mapv deref))
 
       (when-not @interrupted?
         (try (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
              (catch IllegalStateException _))
         (.close executor)
-        (let [failed? (print-results @results)]
+        (let [failed? (print-results @results @timings props)]
           (System/exit (if failed? 1 0)))))))
