@@ -6,55 +6,89 @@
    [k16.forge.reporting :as reporting])
   (:import
    java.util.concurrent.Executors
+   java.util.concurrent.ExecutorService
+   java.util.concurrent.Semaphore
    java.util.concurrent.TimeUnit))
 
 (set! *warn-on-reflection* true)
 
-(def ^:dynamic *current-test-var* nil)
 (def ^:dynamic *reports* nil)
 
+(defmacro vthread
+  {:style/indent :defn}
+  [^ExecutorService executor & body]
+  `(let [^Callable fn# (bound-fn [] ~@body)]
+     (ExecutorService/.submit ~executor fn#)))
+
 (defn- report-handler [{:keys [type] :as report}]
-  (let [current-var @*current-test-var*]
-    (cond
-      (= type :begin-test-var)
-      (reset! *current-test-var* (:var report))
-
-      (= type :end-test-var)
-      (reset! *current-test-var* nil)
-
-      (or (= type :pass)
-          (= type :fail)
-          (= type :error))
+  (when (or (= type :pass)
+            (= type :fail)
+            (= type :error))
+    (let [current-var (first test/*testing-vars*)]
       (swap! *reports* update current-var
              (fn [reports]
                (conj reports report)))))
 
-  (when (= (:type report) :pass)
+  (when (= type :pass)
     (.write System/out (.getBytes ".")))
 
-  (when (or (= (:type report) :fail)
-            (= (:type report) :error))
+  (when (or (= type :fail)
+            (= type :error))
     (.write System/out (String/.getBytes (bling/bling [:bold.system-red "F"]))))
 
   (.flush System/out))
 
-(defn run-test-ns [test-ns]
-  (binding [*current-test-var* (atom nil)
-            *reports* (atom {})]
+(defn- get-test-vars [ns]
+  (->> (ns-interns ns)
+       vals
+       (filter #(:test (meta %)))))
 
+(defn- get-ns-fixtures [ns]
+  (let [ns (the-ns ns)
+        ns-meta (meta ns)]
+    {:once (test/join-fixtures (::test/once-fixtures ns-meta))
+     :each (test/join-fixtures (::test/each-fixtures ns-meta))}))
+
+(defn- run-test-var [v each-fixture-fn results]
+  (binding [*reports* (atom {})]
+    (try (each-fixture-fn (fn [] (test/test-var v)))
+         (catch Exception ex
+           (swap! *reports* update v
+                  (fn [reports]
+                    (conj reports {:type :fail
+                                   :var v
+                                   :actual ex})))))
+    (let [result @*reports*]
+      (when (seq result)
+        (swap! results conj result)))))
+
+(defn- run-test-ns
+  [^ExecutorService executor ^Semaphore semaphore test-ns results interrupted?]
+  (let [test-vars (get-test-vars test-ns)
+        {:keys [once each]} (get-ns-fixtures test-ns)
+        released? (atom false)]
+
+    (Semaphore/.acquire semaphore)
     (try
-      (test/test-ns test-ns)
-      (catch Exception ex
-        (let [current-var @*current-test-var*
-              current-var (if current-var
-                            current-var
-                            (symbol (str test-ns "/" "unknown")))]
-          (swap! *reports* update current-var
-                 (fn [reports]
-                   (conj reports {:type :fail
-                                  :actual ex}))))))
+      (when-not @interrupted?
+        (once
+         (fn []
+           (Semaphore/.release semaphore)
+           (reset! released? true)
+           (->> test-vars
+                (mapv (fn [v]
+                        (vthread executor
+                          (Semaphore/.acquire semaphore)
+                          (try (when-not @interrupted?
+                                 (run-test-var v each results))
+                               (finally
+                                 (Semaphore/.release semaphore))))))
 
-    @*reports*))
+                (mapv deref)))))
+
+      (finally
+        (when-not @released?
+          (Semaphore/.release semaphore))))))
 
 (defn- contains-pattern? [sym patterns]
   (reduce
@@ -94,7 +128,9 @@
 
           namespaces (-> (forge.namespace/get-test-namespaces)
                          (filter-namespaces (:include props) (:exclude props)))
-          pool (Executors/newFixedThreadPool parallelism)
+
+          ^ExecutorService executor (Executors/newVirtualThreadPerTaskExecutor)
+          semaphore (Semaphore. parallelism)
 
           results (atom [])
           interrupted? (atom false)
@@ -103,12 +139,12 @@
           (Thread.
            (fn []
              (reset! interrupted? true)
-             (.shutdown pool)
+             (.shutdown executor)
              (println (bling/bling "["
                                    [:bold.system-red "Interrupted"]
-                                   ":: Waiting for in-progress tests to terminate...]"))
-             (when-not (.awaitTermination pool 10 TimeUnit/SECONDS)
-               (.shutdownNow pool))
+                                   "::Waiting for in-progress tests to terminate]"))
+             (when-not (.awaitTermination executor 10 TimeUnit/SECONDS)
+               (.shutdownNow executor))
              (print-results @results)
              (println)))]
 
@@ -120,21 +156,17 @@
 
       (.addShutdownHook (Runtime/getRuntime) shutdown-hook)
 
-      (let [futures
-            (->> namespaces
-                 (mapv (fn [test-ns]
-                         (.submit pool ^Callable
-                                  (fn []
-                                    (when-not @interrupted?
-                                      (let [result (run-test-ns test-ns)]
-                                        (swap! results conj result)
-                                        result)))))))]
-        (mapv deref futures)
+      (->> namespaces
+           (mapv (fn [test-ns]
+                   (vthread executor
+                     (when-not @interrupted?
+                       (run-test-ns executor semaphore
+                                    test-ns results interrupted?)))))
+           (mapv deref))
 
-        (when-not @interrupted?
-          (try
-            (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
-            (catch IllegalStateException _))
-          (.shutdown pool)
-          (let [failed? (print-results @results)]
-            (System/exit (if failed? 1 0))))))))
+      (when-not @interrupted?
+        (try (.removeShutdownHook (Runtime/getRuntime) shutdown-hook)
+             (catch IllegalStateException _))
+        (.close executor)
+        (let [failed? (print-results @results)]
+          (System/exit (if failed? 1 0)))))))

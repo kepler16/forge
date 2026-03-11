@@ -1,0 +1,4 @@
+{:paths ["src" "test"]
+
+ :aliases {:test {:extra-deps {com.kepler16/forge {:local/root "../"}}
+                  :main-opts ["-m" "k16.forge"]}}}
